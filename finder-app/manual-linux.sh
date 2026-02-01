@@ -15,6 +15,8 @@ ARCH=arm64
 CROSS_COMPILE=aarch64-none-linux-gnu-
 SYSROOT=$(${CROSS_COMPILE}gcc -print-sysroot)
 
+sudo --validate
+
 if [ $# -lt 1 ]
 then
 	echo "Using default directory ${OUTDIR} for output"
@@ -73,19 +75,21 @@ if [ ! -d "${OUTDIR}/busybox" ]; then
     cd busybox
     git checkout ${BUSYBOX_VERSION}
     echo "Cloned busybox version ${BUSYBOX_VERSION}"
+    # TODO:  Configure busybox
+    make distclean
+    make defconfig
+    echo "Busybox configured"
 else
     cd busybox
     echo "Busybox already exists, skipping clone and build"
 fi
 
-# TODO:  Configure busybox
-make distclean
-make defconfig
+# TODO: Make and install busybox
 make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
 make ARCH=${ARCH} CONFIG_PREFIX=${OUTDIR}/rootfs CROSS_COMPILE=${CROSS_COMPILE} install
-echo "Busybox configured"
+echo "Busybox installed"
 
-# TODO: Make and install busybox
+
 echo "Library dependencies"
 ${CROSS_COMPILE}readelf -a ${OUTDIR}/rootfs/bin/busybox | grep "program interpreter"
 ${CROSS_COMPILE}readelf -a ${OUTDIR}/rootfs/bin/busybox | grep "Shared library"
@@ -111,7 +115,9 @@ echo "Writer utility built"
 
 # TODO: Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
-cp -r ${FINDER_APP_DIR}/conf ${OUTDIR}/rootfs/home/
+mkdir ${OUTDIR}/rootfs/home/conf
+cp ${FINDER_APP_DIR}/conf/assignment.txt ${OUTDIR}/rootfs/home/conf/
+cp ${FINDER_APP_DIR}/conf/username.txt ${OUTDIR}/rootfs/home/conf/
 cp ${FINDER_APP_DIR}/autorun-qemu.sh ${OUTDIR}/rootfs/home/
 cp ${FINDER_APP_DIR}/finder-test.sh ${OUTDIR}/rootfs/home/
 cp ${FINDER_APP_DIR}/finder.sh ${OUTDIR}/rootfs/home/
@@ -124,6 +130,8 @@ sudo chown -R root:root .
 echo "Changed ownership of rootfs to root"
 
 # TODO: Create initramfs.cpio.gz
+rm -rf ${OUTDIR}/initramfs.cpio.gz
+
 cd ${OUTDIR}/rootfs
 find . | cpio -H newc -ov --owner root:root > ${OUTDIR}/initramfs.cpio
 gzip -f ${OUTDIR}/initramfs.cpio
