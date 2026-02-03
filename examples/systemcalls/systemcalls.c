@@ -16,8 +16,18 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
-
-    return true;
+    int ret = system(cmd);
+    
+    if (ret == 0)
+    {
+        return true;
+    }
+    else
+    {
+        syslog(LOG_ERR, "System call failed with command: %s", cmd);
+        
+        return false;
+    }
 }
 
 /**
@@ -45,9 +55,11 @@ bool do_exec(int count, ...)
         command[i] = va_arg(args, char *);
     }
     command[count] = NULL;
+    va_end(args); // Clean up once
+    
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
-    command[count] = command[count];
+    // command[count] = command[count];
 
 /*
  * TODO:
@@ -59,9 +71,49 @@ bool do_exec(int count, ...)
  *
 */
 
-    va_end(args);
+    // fork
+    pid_t pid = fork();
+    
+    if (pid < 0)
+    {
+        syslog(LOG_ERR, "Failed to fork process");
 
-    return true;
+        return false;
+    }
+    else if (pid == 0)
+    {
+        // Child process
+        execv(command[0], command);
+        
+        // If execv returns, an error occurred
+        syslog(LOG_ERR, "Failed to execute command: %s", command[0]);
+        
+        _exit(1); // Use exit to get out of child process
+    }
+    else
+    {
+        // Parent process
+        int status;
+        if (waitpid(pid, &status, 0) == -1)
+        {
+            // waitpid failed
+            syslog(LOG_ERR, "waitpid failed for process %d", pid);
+            
+            return false;
+        }
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+        {
+            // Command executed successfully
+            return true;
+        }
+        else
+        {
+            //command exited with failure or didnt exit normally
+            syslog(LOG_ERR, "Command %s exited with status %d", command[0], WEXITSTATUS(status));
+            
+            return false;
+        }
+    }
 }
 
 /**
@@ -80,9 +132,11 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
         command[i] = va_arg(args, char *);
     }
     command[count] = NULL;
+    va_end(args); // Clean up once
+
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
-    command[count] = command[count];
+    // command[count] = command[count];
 
 
 /*
@@ -92,8 +146,67 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
+    int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0644);
+    if (fd < 0)
+    { 
+        syslog(LOG_ERR, "Failed to open output file: %s", outputfile);
+        
+        abort(); 
+    }
 
-    va_end(args);
+    pid_t pid = fork();
+
+    if (pid < 0)
+    {
+        syslog(LOG_ERR, "Failed to fork process");
+        close(fd);
+
+        return false;
+    }
+    else if (pid == 0)
+    {
+        // Child process
+        if(dup2(fd, 1) < 0)
+        {
+            syslog(LOG_ERR, "Failed to redirect standard output to file: %s", outputfile);
+            _exit(1);
+        }
+
+        close(fd);
+        execv(command[0], command);
+        
+        // If execv returns, an error occurred
+        syslog(LOG_ERR, "Failed to execute command: %s", command[0]);
+        
+        _exit(1); // Use exit to get out of child process
+    }
+    else
+    {
+        // Parent process
+        close(fd);
+        
+        int status;
+        if (waitpid(pid, &status, 0) == -1)
+        {
+            // waitpid failed
+            syslog(LOG_ERR, "waitpid failed for process %d", pid);
+            
+            return false;
+        }
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+        {
+            // Command executed successfully
+            return true;
+        }
+        else
+        {
+            //command exited with failure or didnt exit normally
+            syslog(LOG_ERR, "Command %s exited with status %d", command[0], WEXITSTATUS(status));
+            
+            return false;
+        }
+    }
 
     return true;
 }
+
