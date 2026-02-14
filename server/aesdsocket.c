@@ -4,13 +4,31 @@
  * Author: Mason McGaffin
  */
 
-#include "aesdsocket.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <syslog.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <errno.h>
+#include <netdb.h>
+
+#define PORT 9000
+#define BUFFER_SIZE 1024
+#define FILE_PATH "/var/tmp/aesdsocketdata"
+#define BACKLOG 5
 
 volatile sig_atomic_t stop_server = 0;
 // Receive data and write to file
 
-void signal_handler(int signum) 
-{
+void signal_handler(int signum) {
    if (signum == SIGINT || signum == SIGTERM)
    {
       syslog(LOG_INFO, "Caught signal, exiting");
@@ -22,173 +40,42 @@ void signal_handler(int signum)
    }
 }
 
-int handle_client_connection(int client_fd)
+void usage()
 {
-   char *packet = NULL;
-   size_t packet_size = 0;
-
-   while (1)
-   {
-      char recv_buffer[BUFFER_SIZE];
-      ssize_t bytes_received = recv(client_fd, recv_buffer, sizeof(recv_buffer), 0);
-
-      if (bytes_received < 0)
-      {
-         syslog(LOG_ERR, "Receive failed: %s", strerror(errno));
-         free(packet);
-         
-         return -1;
-      }
-      else if (bytes_received == 0)
-      {
-         syslog(LOG_INFO, "Connection closed by client");
-         break; 
-      }
-
-      // Create packet
-      packet = realloc(packet, packet_size + bytes_received);
-      
-      if (packet == NULL)
-      {
-         syslog(LOG_ERR, "Memory allocation failed");
-         free(packet);
-
-         return -1;
-      }
-      
-      // copy received data to packet
-      memcpy(packet + packet_size, recv_buffer, bytes_received);
-      packet_size += bytes_received;
-
-      // Check for newline - end of packet
-      if (memchr(recv_buffer, '\n', bytes_received))
-      {
-         break; 
-      }
-   }
-
-   if (packet != NULL)
-   {
-      // Write packet to file
-      int fd = open(FILE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
-      
-      if (fd < 0)
-      {
-         syslog(LOG_ERR, "Could not open file: %s", strerror(errno));
-         free(packet);
-         close(fd);
-
-         return -1;
-      }
-
-      ssize_t bytes_written = write(fd, packet, packet_size);
-      
-      if (bytes_written < 0)
-      {
-         syslog(LOG_ERR, "Write to file failed: %s", strerror(errno));
-         free(packet);
-         close(fd);
-
-         return -1;
-      }
-      
-
-      syslog(LOG_INFO, "Wrote %zd bytes to file", bytes_written);
-      close(fd);
-
-      // Send file contents back to client
-      char file_buffer[BUFFER_SIZE];
-      ssize_t bytes_read;
-      fd = open(FILE_PATH, O_RDONLY);
-
-      while (1)
-      {
-         bytes_read = read(fd, file_buffer, sizeof(file_buffer));
-         
-         if (bytes_read < 0)
-         {
-            syslog(LOG_ERR, "Read from file failed: %s", strerror(errno));
-            free(packet);
-            close(fd);
-            
-            return -1;
-         }
-         else if (bytes_read == 0)
-         {
-            break; // End of file
-         }
-
-         ssize_t bytes_sent = send(client_fd, file_buffer, bytes_read, 0);
-         
-         if (bytes_sent < 0)
-         {
-            syslog(LOG_ERR, "Send failed: %s", strerror(errno));
-            free(packet);
-            close(fd);
-
-            return -1;
-         }
-      }
-
-      free(packet);
-      close(fd);
-   }
-
-   return 0;
+   fprintf(stdout, "The program \"aesdsocket\" allows users to start a socket application with the option to configure it as a daemon.\n"
+                   "\nUsage: aesdsocket [-d]\n"
+                   "\t-d: Run in daemon mode\n");
 }
 
-
-int start_daemon()
+int main(int argc, char *argv[])
 {
-   // fork
-   pid_t pid = fork();
-   
-   if (pid < 0)
-   {
-      syslog(LOG_ERR, "Failed to fork process");
+   int daemon_mode = 0;
+
+   printf("Logging to syslog with identifier 'aesdsocket'\n");
+   openlog("aesdsocket", 0, LOG_USER);
+
+   if (argc == 1) {
+      printf("Starting aesdsocket server\n");
+      syslog(LOG_INFO, "Starting aesdsocket server");
+   }
+   else if (argc == 2 && strcmp(argv[1], "-d") == 0) {
+      printf("Starting aesdsocket server in daemon mode\n");
+      syslog(LOG_INFO, "Starting aesdsocket server in daemon mode");
+      daemon_mode = 1;
+   }
+   else {
+      fprintf(stderr, "Invalid command line arguments\n");
+      syslog(LOG_ERR, "Invalid command line arguments");
+      usage();
+      closelog();
 
       return -1;
    }
-   else if (pid == 0)
-   {
-      // Child process
-      int status = setsid();
-      if (status < 0)
-      {
-            syslog(LOG_ERR, "Failed to create new session");
-            return -1;
-      }
 
-      // Change working directory to root
-      status = chdir("/");
-      if (status < 0)
-      {
-            syslog(LOG_ERR, "Failed to change working directory to root");
-            return -1;
-      }
+   // Set up signal handler
+   signal(SIGINT, signal_handler);
+   signal(SIGTERM, signal_handler);
 
-      // Redirect standard file descriptors to /dev/null
-      int fd = open("/dev/null", O_RDWR);
-      if (fd < 0)
-      {
-            syslog(LOG_ERR, "Failed to open /dev/null: %s", strerror(errno));
-            return -1;
-      }
-      
-      dup2(fd, STDIN_FILENO);
-      dup2(fd, STDOUT_FILENO);
-      dup2(fd, STDERR_FILENO);
-   }
-   else
-   {
-      exit(0); // Exit parent process
-   }
-
-   return 0;
-}
-
-int start_server_socket(bool daemon_mode)
-{
    // Set up socket
    int status;
    struct addrinfo hints, *servInfo;
@@ -260,13 +147,49 @@ int start_server_socket(bool daemon_mode)
    // Daemonize if requested
    if (daemon_mode)
    {
-      status = start_daemon();
-      if (status < 0)
+      pid_t pid = fork();
+      if (pid < 0)
       {
-         syslog(LOG_ERR, "Failed to daemonize");
+         syslog(LOG_ERR, "Fork failed: %s", strerror(errno));
          close(sock_fd);
+
          return -1;
       }
+      else if (pid > 0)
+      {
+         // Parent process exits
+         syslog(LOG_INFO, "Daemon process started with PID %d", pid);
+         close(sock_fd);
+         exit(0);
+      }
+      // Child process continues as daemon
+      int status = setsid();
+
+      if (status < 0)
+      {
+         syslog(LOG_ERR, "setsid failed: %s", strerror(errno));
+         close(sock_fd);
+
+         return -1;
+      }
+      
+      umask(0);
+
+      status = chdir("/");
+
+      if (status < 0)
+      {
+         syslog(LOG_ERR, "chdir failed: %s", strerror(errno));
+         close(sock_fd);
+
+         return -1;
+      }
+      
+      close(STDIN_FILENO);
+      close(STDOUT_FILENO);
+      close(STDERR_FILENO);
+
+      syslog(LOG_INFO, "Daemon process session created successfully");
    }
 
    // Listen for connections
@@ -280,96 +203,134 @@ int start_server_socket(bool daemon_mode)
 
    syslog(LOG_INFO, "Socket is listening for connections");
 
-   return sock_fd;
-}
-
-int run_server_socket(int sock_fd)
-{
    while (!stop_server)
    {
-      struct sockaddr_storage client_addr;
-      socklen_t addr_size = sizeof(client_addr);
-      int client_fd = accept(sock_fd, (struct sockaddr *)&client_addr, &addr_size);
+      // Accept a connection
+      struct sockaddr_in address;
+      socklen_t addrlen = sizeof(address);
+      int conn = accept(sock_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen);
 
-      if (client_fd < 0)
+      if (conn < 0)
       {
-         if (errno == EWOULDBLOCK || errno == EAGAIN)
+         if (stop_server)
          {
-            continue; // Timeout occurred, check stop_server flag again
+               break; // Interrupted by signal
+         }
+         else if (errno == EWOULDBLOCK || errno == EAGAIN)
+         {
+               continue; // Expected timeout
          }
          else
          {
-            syslog(LOG_ERR, "Socket accept failed: %s", strerror(errno));
-            return -1;
+               syslog(LOG_ERR, "Accept failed: %s", strerror(errno));
+               break; // Accept failed, exit loop
          }
       }
 
-      syslog(LOG_INFO, "Accepted connection from client");
+      syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(address.sin_addr));
 
-      // Handle client connection in a separate function
-      int status = handle_client_connection(client_fd);
-      if (status < 0)
+      char *packet = NULL;
+      size_t packet_size = 0;
+
+      while (1)
       {
-         syslog(LOG_ERR, "Error handling client connection");
-         close(client_fd);
-         return -1;
+         char recv_buffer[BUFFER_SIZE];
+         ssize_t bytes_received = recv(conn, recv_buffer, sizeof(recv_buffer), 0);
+
+         if (bytes_received < 0)
+         {
+            syslog(LOG_ERR, "Receive failed: %s", strerror(errno));
+            break; 
+         }
+         else if (bytes_received == 0)
+         {
+            syslog(LOG_INFO, "Connection closed by client");
+            break; 
+         }
+
+         // Create packet
+         packet = realloc(packet, packet_size + bytes_received);
+         
+         if (packet == NULL)
+         {
+            syslog(LOG_ERR, "Memory allocation failed");
+            free(packet);
+            break;
+         }
+         
+         // copy received data to packet
+         memcpy(packet + packet_size, recv_buffer, bytes_received);
+         packet_size += bytes_received;
+
+         // Check for newline - end of packet
+         if (memchr(recv_buffer, '\n', bytes_received))
+         {
+            break; 
+         }
       }
 
-      close(client_fd);
-   }
+      if (packet != NULL)
+      {
+         // Write packet to file
+         int fd = open(FILE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
+         
+         if (fd < 0)
+         {
+            syslog(LOG_ERR, "Could not open file: %s", strerror(errno));
+            free(packet);
+            close(fd);
+            close(conn);
+            continue;
+         }
 
-   return 0;
-}
+         ssize_t bytes_written = write(fd, packet, packet_size);
+         
+         if (bytes_written < 0)
+         {
+            syslog(LOG_ERR, "Write to file failed: %s", strerror(errno));
+            free(packet);
+            close(fd);
+            close(conn);
+            continue;
+         }
+         
 
-void usage()
-{
-   fprintf(stdout, "The program \"aesdsocket\" allows users to start a socket application with the option to configure it as a daemon.\n"
-                   "\nUsage: aesdsocket [-d]\n"
-                   "\t-d: Run in daemon mode\n");
-}
+         syslog(LOG_INFO, "Wrote %zd bytes to file", bytes_written);
+         close(fd);
 
-int main(int argc, char *argv[])
-{
-   bool daemon_mode = false;
+         // Send file contents back to client
+         char file_buffer[BUFFER_SIZE];
+         ssize_t bytes_read;
+         fd = open(FILE_PATH, O_RDONLY);
 
-   printf("Logging to syslog with identifier 'aesdsocket'\n");
-   openlog("aesdsocket", 0, LOG_USER);
+         while (1)
+         {
+            bytes_read = read(fd, file_buffer, sizeof(file_buffer));
+            
+            if (bytes_read < 0)
+            {
+               syslog(LOG_ERR, "Read from file failed: %s", strerror(errno));
+               break;
+            }
+            else if (bytes_read == 0)
+            {
+               break; // End of file
+            }
 
-   if (argc == 1) {
-      printf("Starting aesdsocket server\n");
-      syslog(LOG_INFO, "Starting aesdsocket server");
-   }
-   else if (argc == 2 && strcmp(argv[1], "-d") == 0) {
-      printf("Starting aesdsocket server in daemon mode\n");
-      syslog(LOG_INFO, "Starting aesdsocket server in daemon mode");
-      daemon_mode = true;
-   }
-   else {
-      fprintf(stderr, "Invalid command line arguments\n");
-      syslog(LOG_ERR, "Invalid command line arguments");
-      usage();
-      closelog();
+            ssize_t bytes_sent = send(conn, file_buffer, bytes_read, 0);
+            
+            if (bytes_sent < 0)
+            {
+               syslog(LOG_ERR, "Send failed: %s", strerror(errno));
+               break;
+            }
+         }
 
-      return -1;
-   }
-
-   // Set up signal handler
-   signal(SIGINT, signal_handler);
-   signal(SIGTERM, signal_handler);
-
-   int sock_fd = start_server_socket(daemon_mode);
-   if (sock_fd < 0)
-   {
-      syslog(LOG_ERR, "Failed to start server socket");
-      closelog();
-
-      return -1;
-   }
-
-   int status = run_server_socket(sock_fd);
-   if (status < 0)
-   {
-      syslog(LOG_ERR, "Error running server socket");
+         free(packet);
+         close(fd);
+      }
+      close(conn);
+      syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(address.sin_addr));
    }
 
    // Close socket, remove file, and close syslog
