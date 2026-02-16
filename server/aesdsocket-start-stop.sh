@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # aesdsocket-start-stop.sh
 # Start/stop script for aesdsocket daemon using start-stop-daemon
 
