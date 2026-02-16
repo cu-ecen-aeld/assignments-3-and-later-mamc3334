@@ -4,7 +4,7 @@
 
 # Get the directory of the script and define paths
 DIR=$(dirname "$(readlink -f "$0")")
-DAEMON=$DIR/aesdsocket
+DAEMON=/usr/bin/aesdsocket
 
 case "$1" in
     start)
