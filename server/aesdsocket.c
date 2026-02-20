@@ -19,14 +19,27 @@
 #include <sys/time.h>
 #include <errno.h>
 #include <netdb.h>
+#include <pthread.h>
+#include <time.h>
 
 #define PORT 9000
 #define BUFFER_SIZE 1024
 #define FILE_PATH "/var/tmp/aesdsocketdata"
 #define BACKLOG 5
+#define TIMESTAMP_INTERVAL 10
 
 volatile sig_atomic_t stop_server = 0;
-// Receive data and write to file
+pthread_mutex_t file_mutex;
+
+typedef struct thread {
+   pthread_t thread_id;
+   struct thread *next;
+} thread_t;
+
+typedef struct {
+   int conn_fd;
+   struct sockaddr_in address;
+} thread_args_t;
 
 void signal_handler(int signum) {
    if (signum == SIGINT || signum == SIGTERM)
@@ -45,6 +58,214 @@ void usage()
    fprintf(stdout, "The program \"aesdsocket\" allows users to start a socket application with the option to configure it as a daemon.\n"
                    "\nUsage: aesdsocket [-d]\n"
                    "\t-d: Run in daemon mode\n");
+}
+
+void *timer_func(void *arg)
+{
+   while (!stop_server)
+   {
+      sleep(TIMESTAMP_INTERVAL);
+      
+      if (stop_server)
+      {
+         break; // stop signal while sleep
+      }
+
+      time_t now = time(NULL);
+      struct tm *timeinfo = localtime(&now);
+      
+      char timestamp_str[256];
+      strftime(timestamp_str, sizeof(timestamp_str), "timestamp:%a, %d %b %Y %H:%M:%S %z\n", timeinfo);
+
+      int status = pthread_mutex_lock(&file_mutex);
+
+      if (status != 0)
+      {
+         syslog(LOG_ERR, "Failed to lock mutex in timer thread: %s", strerror(status));
+         continue;
+      }
+
+      int fd = open(FILE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
+      
+      if (fd < 0)
+      {
+         syslog(LOG_ERR, "Could not open file for timestamp: %s", strerror(errno));
+         pthread_mutex_unlock(&file_mutex);
+
+         return NULL;
+      }
+
+      ssize_t bytes_written = write(fd, timestamp_str, strlen(timestamp_str));
+      if (bytes_written < 0)
+      {
+         syslog(LOG_ERR, "Failed to write timestamp: %s", strerror(errno));
+         close(fd);
+         pthread_mutex_unlock(&file_mutex);
+
+         return NULL;
+      }
+
+      close(fd);
+      pthread_mutex_unlock(&file_mutex);
+   }
+
+   return NULL;
+}
+
+void *thread_func(void *arg)
+{
+   thread_args_t *args = (thread_args_t *)arg;
+   int conn = args->conn_fd;
+   struct sockaddr_in address = args->address;
+   free(args);
+
+   char *packet = NULL;
+   size_t packet_size = 0;
+
+   while (!stop_server)
+   {
+      char recv_buffer[BUFFER_SIZE];
+      ssize_t bytes_received = recv(conn, recv_buffer, sizeof(recv_buffer), 0);
+
+      if (bytes_received < 0)
+      {
+         syslog(LOG_ERR, "Receive failed: %s", strerror(errno));
+         free(packet);
+         close(conn);
+
+         return NULL;
+      }
+      else if (bytes_received == 0)
+      {
+         syslog(LOG_INFO, "Connection closed by client");
+         break; 
+      }
+
+      // Create packet
+      char *new_packet = realloc(packet, packet_size + bytes_received);
+      
+      if (new_packet == NULL)
+      {
+         syslog(LOG_ERR, "Memory allocation failed");
+         free(packet);
+         close(conn);
+
+         return NULL;
+      }
+
+      packet = new_packet;
+      
+      // copy received data to packet
+      memcpy(packet + packet_size, recv_buffer, bytes_received);
+      packet_size += bytes_received;
+
+      // Check for newline - end of packet
+      if (memchr(recv_buffer, '\n', bytes_received))
+      {
+         break; 
+      }
+   }
+
+   if (packet != NULL)
+   {
+      // Lock file mutex
+      int status = pthread_mutex_lock(&file_mutex);
+      
+      if (status != 0)
+      {
+         syslog(LOG_ERR, "Failed to lock mutex: %s", strerror(status));
+         free(packet);
+         close(conn);
+         
+         return NULL;
+      }
+
+      // Write packet to file
+      int fd = open(FILE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
+      
+      if (fd < 0)
+      {
+         syslog(LOG_ERR, "Could not open file: %s", strerror(errno));
+         free(packet);
+         close(conn);
+         pthread_mutex_unlock(&file_mutex);
+
+         return NULL;
+      }
+
+      ssize_t bytes_written = write(fd, packet, packet_size);
+      
+      if (bytes_written < 0)
+      {
+         syslog(LOG_ERR, "Write to file failed: %s", strerror(errno));
+         free(packet);
+         close(fd);
+         close(conn);
+         pthread_mutex_unlock(&file_mutex);
+         
+         return NULL;
+      }
+
+      syslog(LOG_INFO, "Wrote %zd bytes to file", bytes_written);
+      close(fd);
+
+      // Send file contents back to client
+      char file_buffer[BUFFER_SIZE];
+      ssize_t bytes_read;
+      fd = open(FILE_PATH, O_RDONLY);
+
+      if (fd < 0)
+      {
+         syslog(LOG_ERR, "Could not open file for reading: %s", strerror(errno));
+         free(packet);
+         pthread_mutex_unlock(&file_mutex);
+         close(conn);
+
+         return NULL;
+      }
+
+      while (!stop_server)
+      {
+         bytes_read = read(fd, file_buffer, sizeof(file_buffer));
+         
+         if (bytes_read < 0)
+         {
+            syslog(LOG_ERR, "Read from file failed: %s", strerror(errno));
+            free(packet);
+            close(fd);
+            pthread_mutex_unlock(&file_mutex);
+            close(conn);
+
+            return NULL;
+         }
+         else if (bytes_read == 0)
+         {
+            break; // End of file
+         }
+
+         ssize_t bytes_sent = send(conn, file_buffer, bytes_read, 0);
+         
+         if (bytes_sent < 0)
+         {
+            syslog(LOG_ERR, "Send failed: %s", strerror(errno));
+            free(packet);
+            close(fd);
+            pthread_mutex_unlock(&file_mutex);
+            close(conn);
+            
+            return NULL;
+         }
+      }
+
+      close(fd);
+      pthread_mutex_unlock(&file_mutex);
+   }
+
+   free(packet);
+   close(conn);
+   syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(address.sin_addr));
+
+   return NULL;
 }
 
 int main(int argc, char *argv[])
@@ -88,7 +309,6 @@ int main(int argc, char *argv[])
    if (status != 0)
    {
       syslog(LOG_ERR, "getaddrinfo failed: %s", gai_strerror(status));
-      freeaddrinfo(servInfo);
 
       return -1;
    }
@@ -121,8 +341,8 @@ int main(int argc, char *argv[])
 
    // Set receive timeout for accept() to allow signal termination
    struct timeval timeout;
-   timeout.tv_sec = 1;  // 1 second timeout
-   timeout.tv_usec = 0;
+   timeout.tv_sec = 1;  
+   timeout.tv_usec = 0; // 10ms timeout
 
    status = setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
    if (status < 0)
@@ -163,7 +383,7 @@ int main(int argc, char *argv[])
          exit(0);
       }
       // Child process continues as daemon
-      int status = setsid();
+      status = setsid();
 
       if (status < 0)
       {
@@ -202,6 +422,30 @@ int main(int argc, char *argv[])
    }
 
    syslog(LOG_INFO, "Socket is listening for connections");
+   
+   // Thread management
+   thread_t *thread_list = NULL;
+   status = pthread_mutex_init(&file_mutex, NULL);
+
+   if (status != 0)
+   {
+      syslog(LOG_ERR, "pthread_mutex_init failed");
+      close(sock_fd);
+
+      return -1;
+   }
+
+   // Create timer thread
+   pthread_t timer_id;
+   status = pthread_create(&timer_id, NULL, timer_func, NULL);
+
+   if (status != 0)
+   {
+      syslog(LOG_ERR, "Failed to create timer thread: %s", strerror(status));
+      close(sock_fd);
+      
+      return -1;
+   }
 
    while (!stop_server)
    {
@@ -229,111 +473,64 @@ int main(int argc, char *argv[])
 
       syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(address.sin_addr));
 
-      char *packet = NULL;
-      size_t packet_size = 0;
-
-      while (1)
+      // Create thread arguments
+      thread_args_t *args = malloc(sizeof(thread_args_t));
+      
+      if (args == NULL)
       {
-         char recv_buffer[BUFFER_SIZE];
-         ssize_t bytes_received = recv(conn, recv_buffer, sizeof(recv_buffer), 0);
-
-         if (bytes_received < 0)
-         {
-            syslog(LOG_ERR, "Receive failed: %s", strerror(errno));
-            break; 
-         }
-         else if (bytes_received == 0)
-         {
-            syslog(LOG_INFO, "Connection closed by client");
-            break; 
-         }
-
-         // Create packet
-         packet = realloc(packet, packet_size + bytes_received);
+         syslog(LOG_ERR, "Failed to allocate memory for thread arguments");
+         close(conn);
          
-         if (packet == NULL)
-         {
-            syslog(LOG_ERR, "Memory allocation failed");
-            free(packet);
-            break;
-         }
-         
-         // copy received data to packet
-         memcpy(packet + packet_size, recv_buffer, bytes_received);
-         packet_size += bytes_received;
+         continue;
+      }
+      
+      args->conn_fd = conn;
+      args->address = address;
 
-         // Check for newline - end of packet
-         if (memchr(recv_buffer, '\n', bytes_received))
-         {
-            break; 
-         }
+      // Create a new thread to handle this connection
+      pthread_t thread_id;
+      status = pthread_create(&thread_id, NULL, thread_func, args);
+      
+      if (status != 0)
+      {
+         syslog(LOG_ERR, "Failed to create thread: %s", strerror(status));
+         free(args);
+         close(conn);
+         continue;
       }
 
-      if (packet != NULL)
+      // Add thread to list for cleanup later
+      thread_t *new_thread = malloc(sizeof(thread_t));
+      
+      if (new_thread == NULL)
       {
-         // Write packet to file
-         int fd = open(FILE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
-         
-         if (fd < 0)
-         {
-            syslog(LOG_ERR, "Could not open file: %s", strerror(errno));
-            free(packet);
-            close(fd);
-            close(conn);
-            continue;
-         }
-
-         ssize_t bytes_written = write(fd, packet, packet_size);
-         
-         if (bytes_written < 0)
-         {
-            syslog(LOG_ERR, "Write to file failed: %s", strerror(errno));
-            free(packet);
-            close(fd);
-            close(conn);
-            continue;
-         }
-         
-
-         syslog(LOG_INFO, "Wrote %zd bytes to file", bytes_written);
-         close(fd);
-
-         // Send file contents back to client
-         char file_buffer[BUFFER_SIZE];
-         ssize_t bytes_read;
-         fd = open(FILE_PATH, O_RDONLY);
-
-         while (1)
-         {
-            bytes_read = read(fd, file_buffer, sizeof(file_buffer));
-            
-            if (bytes_read < 0)
-            {
-               syslog(LOG_ERR, "Read from file failed: %s", strerror(errno));
-               break;
-            }
-            else if (bytes_read == 0)
-            {
-               break; // End of file
-            }
-
-            ssize_t bytes_sent = send(conn, file_buffer, bytes_read, 0);
-            
-            if (bytes_sent < 0)
-            {
-               syslog(LOG_ERR, "Send failed: %s", strerror(errno));
-               break;
-            }
-         }
-
-         free(packet);
-         close(fd);
+         syslog(LOG_ERR, "Failed to allocate memory for new thread");
+         pthread_detach(thread_id);
+         close(conn);
+         continue;
       }
-      close(conn);
-      syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(address.sin_addr));
+
+      new_thread->thread_id = thread_id;
+      new_thread->next = thread_list; // add to front of list
+      thread_list = new_thread;
    }
 
-   // Close socket, remove file, and close syslog
+   // Cancel and join timer thread - safer than kill
+   pthread_cancel(timer_id);
+   pthread_join(timer_id, NULL);
+
+   // Wait for connection threads to complete
+   thread_t *curr = thread_list;
+   while (curr != NULL)
+   {
+      pthread_join(curr->thread_id, NULL);
+      thread_t *temp = curr;
+      curr = curr->next;
+      free(temp);
+   }
+
+   // Cleanup
+   pthread_mutex_destroy(&file_mutex);
    syslog(LOG_INFO, "Shutting down server");
    close(sock_fd);
    remove(FILE_PATH);
