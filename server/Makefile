@@ -1,9 +1,9 @@
-EXEC	= aesdsocket
-CC 		= $(CROSS_COMPILE)gcc
+EXEC	?= aesdsocket
+CC 		?= $(CROSS_COMPILE)gcc
 
 # Flags
-CFLAGS 	= -Wall -Werror
-LDFLAGS  = 
+CFLAGS 	?= -g -Wall -Werror
+LDFLAGS  ?= -pthread -lrt
 
 SRC      = $(wildcard *.c)
 OBJ      = $(SRC:.c=.o)
