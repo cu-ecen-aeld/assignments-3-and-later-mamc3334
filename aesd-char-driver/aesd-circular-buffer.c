@@ -29,24 +29,85 @@
 struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct aesd_circular_buffer *buffer,
             size_t char_offset, size_t *entry_offset_byte_rtn )
 {
-    /**
-    * TODO: implement per description
-    */
-    return NULL;
+    // verify buffer and byte pointers exist
+    if(!buffer || !entry_offset_byte_rtn)
+    {
+        return NULL;
+    }
+
+    // verify list not empty
+    if(buffer->head == buffer->tail && !buffer->full)
+    {
+        return NULL;
+    }
+
+    //iterate to correct entry
+    size_t offset = char_offset;
+    uint8_t idx = buffer->head;
+
+    while(buffer->entry[idx].size <= offset)
+    {
+        offset -= buffer->entry[idx].size;
+        idx++;
+
+        // check for loop around
+        if(idx >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+        {
+            idx = 0;
+        }
+
+        // check if reached tail - points to empty or all the way back to start
+        if(idx == buffer->tail )
+        {
+            return NULL;
+        }
+    }
+
+    *entry_offset_byte_rtn = offset;
+
+    return &buffer->entry[idx];
 }
 
 /**
-* Adds entry @param add_entry to @param buffer in the location specified in buffer->in_offs.
-* If the buffer was already full, overwrites the oldest entry and advances buffer->out_offs to the
+* Adds entry @param add_entry to @param buffer in the location specified in buffer->tail.
+* If the buffer was already full, overwrites the oldest entry and advances buffer->head to the
 * new start location.
 * Any necessary locking must be handled by the caller
 * Any memory referenced in @param add_entry must be allocated by and/or must have a lifetime managed by the caller.
 */
 void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const struct aesd_buffer_entry *add_entry)
 {
-    /**
-    * TODO: implement per description
-    */
+    // verify pointers exist
+    if(!buffer || !add_entry)
+    {
+        return;
+    }
+
+    //create entry at tail
+    buffer->entry[buffer->tail] = *add_entry;
+    //increment tail and head if full
+    buffer->tail++;
+
+    if(buffer->full)
+    {
+        buffer->head++;
+    }
+
+    //check wrap around
+    if(buffer->tail >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+    {
+        buffer->tail = 0;
+        if(buffer->full)
+        {
+            buffer->head = 0;
+        }
+    }
+
+    //check if entry causes buffer to be full (or already full)
+    if(buffer->tail == buffer->head)
+    {
+        buffer->full = true;
+    }
 }
 
 /**

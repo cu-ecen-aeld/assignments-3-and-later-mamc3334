@@ -40,11 +40,11 @@ struct aesd_circular_buffer
      * The current location in the entry structure where the next write should
      * be stored.
      */
-    uint8_t in_offs;
+    uint8_t tail;
     /**
      * The first location in the entry structure to read from
      */
-    uint8_t out_offs;
+    uint8_t head;
     /**
      * set to true when the buffer entry structure is full
      */
