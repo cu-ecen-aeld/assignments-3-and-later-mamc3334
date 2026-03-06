@@ -22,11 +22,22 @@
 #include <pthread.h>
 #include <time.h>
 
+
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
+
+#if USE_AESD_CHAR_DEVICE
+  #define FILE_PATH "/dev/aesdchar"
+#else
+  #define FILE_PATH "/var/tmp/aesdsocketdata"
+  #define TIMESTAMP_INTERVAL 10
+#endif
+
 #define PORT 9000
 #define BUFFER_SIZE 1024
-#define FILE_PATH "/var/tmp/aesdsocketdata"
 #define BACKLOG 5
-#define TIMESTAMP_INTERVAL 10
+
 
 volatile sig_atomic_t stop_server = 0;
 pthread_mutex_t file_mutex;
@@ -60,6 +71,7 @@ void usage()
                    "\t-d: Run in daemon mode\n");
 }
 
+#if !USE_AESD_CHAR_DEVICE
 void *timer_func(void *arg)
 {
    while (!stop_server)
@@ -111,6 +123,7 @@ void *timer_func(void *arg)
 
    return NULL;
 }
+#endif
 
 void *thread_func(void *arg)
 {
@@ -259,6 +272,7 @@ void *thread_func(void *arg)
 
       close(fd);
       pthread_mutex_unlock(&file_mutex);
+
    }
 
    free(packet);
@@ -342,7 +356,7 @@ int main(int argc, char *argv[])
    // Set receive timeout for accept() to allow signal termination
    struct timeval timeout;
    timeout.tv_sec = 1;  
-   timeout.tv_usec = 0; // 10ms timeout
+   timeout.tv_usec = 0;
 
    status = setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
    if (status < 0)
@@ -435,6 +449,7 @@ int main(int argc, char *argv[])
       return -1;
    }
 
+#if !USE_AESD_CHAR_DEVICE
    // Create timer thread
    pthread_t timer_id;
    status = pthread_create(&timer_id, NULL, timer_func, NULL);
@@ -443,9 +458,11 @@ int main(int argc, char *argv[])
    {
       syslog(LOG_ERR, "Failed to create timer thread: %s", strerror(status));
       close(sock_fd);
-      
+      pthread_mutex_destroy(&file_mutex);
+
       return -1;
    }
+#endif
 
    while (!stop_server)
    {
@@ -515,10 +532,7 @@ int main(int argc, char *argv[])
       thread_list = new_thread;
    }
 
-   // Cancel and join timer thread - safer than kill
-   pthread_cancel(timer_id);
-   pthread_join(timer_id, NULL);
-
+   // TODO: This is not scalable - need to join threads as they complete
    // Wait for connection threads to complete
    thread_t *curr = thread_list;
    while (curr != NULL)
@@ -529,11 +543,20 @@ int main(int argc, char *argv[])
       free(temp);
    }
 
+   
+#if !USE_AESD_CHAR_DEVICE
+   // Cancel and join timer thread - safer than kill
+   pthread_cancel(timer_id);
+   pthread_join(timer_id, NULL);
+
+   //remove /var/tmp/aesdsocket
+   remove(FILE_PATH);
+#endif
+
    // Cleanup
    pthread_mutex_destroy(&file_mutex);
    syslog(LOG_INFO, "Shutting down server");
    close(sock_fd);
-   remove(FILE_PATH);
    closelog();
 
    return 0;

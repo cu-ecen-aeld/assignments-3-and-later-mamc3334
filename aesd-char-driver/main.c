@@ -9,6 +9,9 @@
  * @date 2019-10-22
  * @copyright Copyright (c) 2019
  *
+ * 
+ * @author Mason McGaffin
+ * @date 2026-03-03
  */
 
 #include <linux/module.h>
@@ -21,7 +24,7 @@
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
-MODULE_AUTHOR("Your Name Here"); /** TODO: fill in your name **/
+MODULE_AUTHOR("Mason McGaffin");
 MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
@@ -29,9 +32,11 @@ struct aesd_dev aesd_device;
 int aesd_open(struct inode *inode, struct file *filp)
 {
     PDEBUG("open");
-    /**
-     * TODO: handle open
-     */
+
+    struct aesd_dev *dev;
+    dev = container_of(inode->i_cdev, struct aesd_dev, cdev);
+    filp->private_data = dev;
+    
     return 0;
 }
 
@@ -41,30 +46,154 @@ int aesd_release(struct inode *inode, struct file *filp)
     /**
      * TODO: handle release
      */
+    
+    //nothing to do
+    
     return 0;
 }
 
-ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
-                loff_t *f_pos)
+/**
+ * @return retval;  retval==count - Everything requested was transferred;
+ *                  0<retval<count - Only some returned - partial read
+ *                  retval==0 - End of file;
+ *                  retval<0 - Error - -ERESTARTSYS, -EINTR, -EFAULT
+ */
+ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
-    ssize_t retval = 0;
-    PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
+    ssize_t retval = -1; // expect to change 
+    PDEBUG("trying to read %zu bytes with offset %lld",count,*f_pos);
     /**
      * TODO: handle read
      */
+
+    struct aesd_dev* dev = (struct aesd_dev*) filp->private_data;
+
+    // lock
+    mutex_lock_interruptible(&dev->lock);
+    
+    //handle offset
+    struct aesd_buffer_entry *ret_entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->circularBuffer, *f_pos, &retval);
+    if(retval == -1)
+    {
+        PDEBUG("Byte not found at specified offset");
+        mutex_unlock(&dev->lock);
+        return 0;
+    }
+
+    // byte found - copy rest of entry
+    retval = ret_entry->size - retval;
+    if(retval > count) retval = count; //more bytes in command than count - don't read full command
+
+    int status = copy_to_user(buf, ret_entry->buffptr, retval);
+    if(status != 0)
+    {
+        PDEBUG("Copy failed. Could not copy %u bytes", status);
+        mutex_unlock(&dev->lock);
+        return -EFAULT;
+    }
+
+    //update pointer
+    *f_pos += retval;
+
+    //Unlock
+    mutex_unlock(&dev->lock);
+
     return retval;
 }
 
-ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
-                loff_t *f_pos)
+/**
+ * @param filp file pointer
+ * @param buf  user buffer
+ * @param count number of bytes to write
+ * @param f_pos offset - simple
+ * 
+ * @return retval;  retval==count - successfully wrote command; 
+ *                  0<return<count - only part written, retry;
+ *                  retval==0 - Nothing written, retry;
+ *                  retval<0 - Error code - -ENOMEM, -EFAULT
+ */
+ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
     ssize_t retval = -ENOMEM;
     PDEBUG("write %zu bytes with offset %lld",count,*f_pos);
     /**
      * TODO: handle write
      */
+    
+    // malloc buffer of specified size
+    char* temp_buffer = kmalloc(count, GFP_KERNEL);
+    if(!temp_buffer)
+    {
+        return -ENOMEM;
+    }
+    
+    // copy user buffer to kernel space
+    if (copy_from_user(temp_buffer, buf, count))
+    {
+        kfree(temp_buffer);
+        return -EFAULT;
+    }
+
+    int index = 0;
+    while(index < count)
+    {
+        if(temp_buffer[index] == '\n')
+        {
+            break;
+        }
+        index++;
+    }
+    
+    bool completeCommand = false;
+    if(index != count)
+    {
+        completeCommand = true;
+    }
+
+    size_t newCommandSize = (size_t)(completeCommand ? (index+1) : index);
+
+    struct aesd_dev* dev = (struct aesd_dev*) filp->private_data;
+
+    mutex_lock_interruptible(&dev->lock);
+
+    char* new_buffer = krealloc(dev->tempEntry.buffptr, dev->tempEntry.size + newCommandSize, GFP_KERNEL);
+    if(!new_buffer)
+    {
+        retval = -ENOMEM;
+        goto eofunc;
+    }
+    dev->tempEntry.buffptr = new_buffer;
+
+    //copy to allocated buffer
+    memcpy(dev->tempEntry.buffptr + dev->tempEntry.size, temp_buffer, newCommandSize);
+    dev->tempEntry.size += newCommandSize;
+
+    //if complete command, write to circular buffer
+    if(completeCommand)
+    {
+        char *override = aesd_circular_buffer_add_entry(&dev->circularBuffer, &dev->tempEntry);
+        
+        if(override)
+        {
+            kfree(override);
+        }
+
+        //reset tempEntry
+        kfree(dev->tempEntry.buffptr);
+        dev->tempEntry.buffptr = NULL;
+        dev->tempEntry.size = 0;
+    }
+
+    retval = newCommandSize;
+    
+    eofunc:
+    //release lock
+    mutex_unlock(&dev->lock);
+    if(temp_buffer) kfree(temp_buffer);
+
     return retval;
 }
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
@@ -106,6 +235,14 @@ int aesd_init_module(void)
      * TODO: initialize the AESD specific portion of the device
      */
 
+    // init mutex
+    mutex_init(&aesd_device.lock);
+    
+    // init circular buffer
+    aesd_circular_buffer_init(&aesd_device.circularBuffer);
+
+    //tempEntry exists but is empty - must cleanup
+
     result = aesd_setup_cdev(&aesd_device);
 
     if( result ) {
@@ -124,6 +261,20 @@ void aesd_cleanup_module(void)
     /**
      * TODO: cleanup AESD specific poritions here as necessary
      */
+
+    //free tempEntry
+    if(aesd_device.tempEntry.buffptr) kfree(aesd_device.tempEntry.buffptr);
+
+    //free circular buffer
+    uint8_t index;
+    struct aesd_buffer_entry *entry;
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, &aesd_device.circularBuffer, index)
+    {
+        if (entry->buffptr) kfree((void *)entry->buffptr);
+    }
+
+    //free mutex
+    mutex_destroy(&aesd_device.lock);
 
     unregister_chrdev_region(devno, 1);
 }

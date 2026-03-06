@@ -74,40 +74,52 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
 * new start location.
 * Any necessary locking must be handled by the caller
 * Any memory referenced in @param add_entry must be allocated by and/or must have a lifetime managed by the caller.
+* 
+* @return NULL or aesd_buffer_entry that was removed from circular buffer to free it
 */
-void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const struct aesd_buffer_entry *add_entry)
+char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const struct aesd_buffer_entry *add_entry)
 {
     // verify pointers exist
     if(!buffer || !add_entry)
     {
-        return;
+        return NULL;
     }
+
+    char *retval = NULL;
 
     //create entry at tail
     buffer->entry[buffer->tail] = *add_entry;
     //increment tail and head if full
     buffer->tail++;
 
-    if(buffer->full)
-    {
-        buffer->head++;
-    }
-
-    //check wrap around
+    //check wrap around for tail
     if(buffer->tail >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
     {
         buffer->tail = 0;
-        if(buffer->full)
+    }
+
+    //check if overwrite
+    if(buffer->full)
+    {
+        retval = (char *)(buffer->entry[buffer->head].buffptr);
+        buffer->head++;
+
+        //check wrap around for head
+        if(buffer->head >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
         {
             buffer->head = 0;
         }
     }
+
+    
 
     //check if entry causes buffer to be full (or already full)
     if(buffer->tail == buffer->head)
     {
         buffer->full = true;
     }
+
+    return retval;
 }
 
 /**
