@@ -60,7 +60,7 @@ int aesd_release(struct inode *inode, struct file *filp)
  */
 ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
-    ssize_t retval = -1; // expect to change 
+    ssize_t retval = 0; // expect to change 
     PDEBUG("trying to read %zu bytes with offset %lld",count,*f_pos);
     /**
      * TODO: handle read
@@ -71,9 +71,11 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
     // lock
     mutex_lock_interruptible(&dev->lock);
     
+
+    size_t ret_offset = 0;
     //handle offset
-    struct aesd_buffer_entry *ret_entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->circularBuffer, *f_pos, &retval);
-    if(retval == -1)
+    struct aesd_buffer_entry *ret_entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->circularBuffer, *f_pos, &ret_offset);
+    if(!ret_entry)
     {
         PDEBUG("Byte not found at specified offset");
         mutex_unlock(&dev->lock);
@@ -81,10 +83,10 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
     }
 
     // byte found - copy rest of entry
-    retval = ret_entry->size - retval;
+    retval = ret_entry->size - ret_offset;
     if(retval > count) retval = count; //more bytes in command than count - don't read full command
 
-    int status = copy_to_user(buf, ret_entry->buffptr, retval);
+    int status = copy_to_user(buf, ret_entry->buffptr + ret_offset, retval);
     if(status != 0)
     {
         PDEBUG("Copy failed. Could not copy %u bytes", status);
