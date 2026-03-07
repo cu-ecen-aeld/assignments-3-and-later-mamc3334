@@ -29,6 +29,14 @@ MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
 
+//fun declarations
+int aesd_open(struct inode *inode, struct file *filp);
+int aesd_release(struct inode *inode, struct file *filp);
+ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos);
+ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos);
+int aesd_init_module(void);
+void aesd_cleanup_module(void);
+
 int aesd_open(struct inode *inode, struct file *filp)
 {
     PDEBUG("open");
@@ -69,8 +77,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
     struct aesd_dev* dev = (struct aesd_dev*) filp->private_data;
 
     // lock
-    mutex_lock_interruptible(&dev->lock);
-    
+    if(mutex_lock_interruptible(&dev->lock)) return -ERESTARTSYS;
 
     size_t ret_offset = 0;
     //handle offset
@@ -156,7 +163,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
 
     struct aesd_dev* dev = (struct aesd_dev*) filp->private_data;
 
-    mutex_lock_interruptible(&dev->lock);
+    if (mutex_lock_interruptible(&dev->lock)) return -ERESTARTSYS;
 
     char* new_buffer = krealloc(dev->tempEntry.buffptr, dev->tempEntry.size + newCommandSize, GFP_KERNEL);
     if(!new_buffer)
@@ -167,7 +174,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     dev->tempEntry.buffptr = new_buffer;
 
     //copy to allocated buffer
-    memcpy(dev->tempEntry.buffptr + dev->tempEntry.size, temp_buffer, newCommandSize);
+    memcpy((void *)dev->tempEntry.buffptr + dev->tempEntry.size, temp_buffer, newCommandSize);
     dev->tempEntry.size += newCommandSize;
 
     //if complete command, write to circular buffer
@@ -181,7 +188,6 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
         }
 
         //reset tempEntry
-        kfree(dev->tempEntry.buffptr);
         dev->tempEntry.buffptr = NULL;
         dev->tempEntry.size = 0;
     }
