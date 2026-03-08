@@ -201,10 +201,6 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     memcpy((void *)dev->tempEntry.buffptr + dev->tempEntry.size, temp_buffer, newCommandSize);
     dev->tempEntry.size += newCommandSize;
 
-    PDEBUG("write: count=%zu completeCommand=%d tempEntry.size before=%zu after=%zu",
-       count, completeCommand, dev->tempEntry.size, 
-       dev->tempEntry.size + newCommandSize);
-
     //if complete command, write to circular buffer
     if(completeCommand)
     {
@@ -218,7 +214,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
         //reset tempEntry
         dev->tempEntry.buffptr = NULL;
         dev->tempEntry.size = 0;
-        PDEBUG("committed entry, tempEntry reset, size=%zu", dev->tempEntry.size);
+        PDEBUG("tempEntry reset, size=%zu", dev->tempEntry.size);
     }
 
     retval = newCommandSize;
