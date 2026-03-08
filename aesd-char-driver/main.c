@@ -180,10 +180,6 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
         goto eofunc;
     }
 
-    PDEBUG("write: count=%zu completeCommand=%d tempEntry.size before=%zu after=%zu",
-       count, completeCommand, dev->tempEntry.size, 
-       dev->tempEntry.size + newCommandSize);
-
     char* new_buffer;
     if(dev->tempEntry.buffptr == NULL) 
     {
@@ -193,7 +189,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     {
         new_buffer = krealloc(dev->tempEntry.buffptr, dev->tempEntry.size + newCommandSize, GFP_KERNEL);
     }
-    
+
     if(!new_buffer)
     {
         retval = -ENOMEM;
@@ -201,13 +197,13 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     }
     dev->tempEntry.buffptr = new_buffer;
 
-    PDEBUG("write: count=%zu completeCommand=%d tempEntry.size before=%zu after=%zu",
-       count, completeCommand, dev->tempEntry.size, 
-       dev->tempEntry.size + newCommandSize);
-
     //copy to allocated buffer
     memcpy((void *)dev->tempEntry.buffptr + dev->tempEntry.size, temp_buffer, newCommandSize);
     dev->tempEntry.size += newCommandSize;
+
+    PDEBUG("write: count=%zu completeCommand=%d tempEntry.size before=%zu after=%zu",
+       count, completeCommand, dev->tempEntry.size, 
+       dev->tempEntry.size + newCommandSize);
 
     //if complete command, write to circular buffer
     if(completeCommand)
@@ -223,10 +219,6 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
         dev->tempEntry.buffptr = NULL;
         dev->tempEntry.size = 0;
     }
-
-    PDEBUG("write: count=%zu completeCommand=%d tempEntry.size before=%zu after=%zu",
-       count, completeCommand, dev->tempEntry.size, 
-       dev->tempEntry.size + newCommandSize);
 
     retval = newCommandSize;
     
