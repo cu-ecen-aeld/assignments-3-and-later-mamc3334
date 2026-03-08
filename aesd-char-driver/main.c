@@ -14,6 +14,17 @@
  * @date 2026-03-03
  */
 
+ /** AI USE DISCLAIMER
+  * 
+  * I used Claude AI to debug my code. 
+  * I included build outputs and the source code I wrote to find and correct bugs.
+  * 
+  * Links to history: 
+  * - https://claude.ai/share/097123e4-c175-498e-a0a1-74bc463e52a8
+  * - https://claude.ai/share/662d7365-0c23-4bae-882d-7d750af5baba 
+  */
+
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/printk.h>
@@ -163,7 +174,11 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
 
     struct aesd_dev* dev = (struct aesd_dev*) filp->private_data;
 
-    if (mutex_lock_interruptible(&dev->lock)) return -ERESTARTSYS;
+    if (mutex_lock_interruptible(&dev->lock))
+    {
+        retval = -ERESTARTSYS;
+        goto eofunc;
+    }
 
     char* new_buffer = krealloc(dev->tempEntry.buffptr, dev->tempEntry.size + newCommandSize, GFP_KERNEL);
     if(!new_buffer)
