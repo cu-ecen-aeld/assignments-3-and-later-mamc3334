@@ -87,17 +87,6 @@ char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const 
 
     char *retval = NULL;
 
-    //create entry at tail
-    buffer->entry[buffer->tail] = *add_entry;
-    //increment tail and head if full
-    buffer->tail++;
-
-    //check wrap around for tail
-    if(buffer->tail >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
-    {
-        buffer->tail = 0;
-    }
-
     //check if overwrite
     if(buffer->full)
     {
@@ -111,7 +100,16 @@ char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const 
         }
     }
 
-    
+    //create entry at tail
+    buffer->entry[buffer->tail] = *add_entry;
+    //increment tail and head if full
+    buffer->tail++;
+
+    //check wrap around for tail
+    if(buffer->tail >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+    {
+        buffer->tail = 0;
+    }
 
     //check if entry causes buffer to be full (or already full)
     if(buffer->tail == buffer->head)
