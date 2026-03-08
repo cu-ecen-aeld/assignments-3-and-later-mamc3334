@@ -218,6 +218,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
         //reset tempEntry
         dev->tempEntry.buffptr = NULL;
         dev->tempEntry.size = 0;
+        PDEBUG("committed entry, tempEntry reset, size=%zu", dev->tempEntry.size);
     }
 
     retval = newCommandSize;
