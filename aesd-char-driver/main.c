@@ -184,7 +184,16 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
        count, completeCommand, dev->tempEntry.size, 
        dev->tempEntry.size + newCommandSize);
 
-    char* new_buffer = krealloc(dev->tempEntry.buffptr, dev->tempEntry.size + newCommandSize, GFP_KERNEL);
+    char* new_buffer;
+    if(dev->tempEntry.buffptr == NULL) 
+    {
+        new_buffer = kmalloc(newCommandSize, GFP_KERNEL);
+    } 
+    else 
+    {
+        new_buffer = krealloc(dev->tempEntry.buffptr, dev->tempEntry.size + newCommandSize, GFP_KERNEL);
+    }
+    
     if(!new_buffer)
     {
         retval = -ENOMEM;
