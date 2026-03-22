@@ -156,8 +156,8 @@ void *thread_func(void *arg)
          break; 
       }
 
-      // Create packet
-      char *new_packet = realloc(packet, packet_size + bytes_received);
+      // Create packet - add 1 for null terminate
+      char *new_packet = realloc(packet, packet_size + bytes_received + 1);
       
       if (new_packet == NULL)
       {
@@ -173,6 +173,7 @@ void *thread_func(void *arg)
       // copy received data to packet
       memcpy(packet + packet_size, recv_buffer, bytes_received);
       packet_size += bytes_received;
+      packet[packet_size] = '\0'; // null terminate
 
       // Check for newline - end of packet
       if (memchr(recv_buffer, '\n', bytes_received))
@@ -309,8 +310,6 @@ void *thread_func(void *arg)
             return NULL;
          }
       }
-      
-      
 
       close(fd);
       pthread_mutex_unlock(&file_mutex);
