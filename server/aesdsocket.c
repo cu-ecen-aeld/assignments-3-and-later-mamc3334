@@ -21,7 +21,9 @@
 #include <netdb.h>
 #include <pthread.h>
 #include <time.h>
+#include <stdbool.h>
 
+#include "../aesd-char-driver/aesd_ioctl.h"
 
 #ifndef USE_AESD_CHAR_DEVICE
 #define USE_AESD_CHAR_DEVICE 1
@@ -193,49 +195,87 @@ void *thread_func(void *arg)
          return NULL;
       }
 
-      // Write packet to file
-      int fd = open(FILE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
-      
-      if (fd < 0)
-      {
-         syslog(LOG_ERR, "Could not open file: %s", strerror(errno));
-         free(packet);
-         close(conn);
-         pthread_mutex_unlock(&file_mutex);
+      int fd;
 
-         return NULL;
+#if USE_AESD_CHAR_DEVICE
+      // Check for AESDCHAR_IOCSEEKTO:X,Y command
+      struct aesd_seekto seekto;
+
+      if (sscanf(packet, "AESDCHAR_IOCSEEKTO:%u,%u", &seekto.write_cmd, &seekto.write_cmd_offset) == 2)
+      {
+         //read ioctl
+         // Open device, perform ioctl, then read from same fd
+         fd = open(FILE_PATH, O_RDWR);
+         if (fd < 0)
+         {
+            syslog(LOG_ERR, "Could not open device for ioctl: %s", strerror(errno));
+            free(packet);
+            close(conn);
+            pthread_mutex_unlock(&file_mutex);
+
+            return NULL;
+         }
+
+         if (ioctl(fd, AESDCHAR_IOCSEEKTO, &seekto) < 0)
+         {
+            syslog(LOG_ERR, "ioctl AESDCHAR_IOCSEEKTO failed: %s", strerror(errno));
+            close(fd);
+            free(packet);
+            pthread_mutex_unlock(&file_mutex);
+            close(conn);
+            return NULL;
+         }
       }
-
-      ssize_t bytes_written = write(fd, packet, packet_size);
-      
-      if (bytes_written < 0)
+      else
+#endif
       {
-         syslog(LOG_ERR, "Write to file failed: %s", strerror(errno));
-         free(packet);
-         close(fd);
-         close(conn);
-         pthread_mutex_unlock(&file_mutex);
+         //read normal
+         // Write packet to file
+         fd = open(FILE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
          
-         return NULL;
-      }
+         if (fd < 0)
+         {
+            syslog(LOG_ERR, "Could not open file: %s", strerror(errno));
+            free(packet);
+            close(conn);
+            pthread_mutex_unlock(&file_mutex);
 
-      syslog(LOG_INFO, "Wrote %zd bytes to file", bytes_written);
-      close(fd);
+            return NULL;
+         }
+
+         ssize_t bytes_written = write(fd, packet, packet_size);
+         
+         if (bytes_written < 0)
+         {
+            syslog(LOG_ERR, "Write to file failed: %s", strerror(errno));
+            free(packet);
+            close(fd);
+            close(conn);
+            pthread_mutex_unlock(&file_mutex);
+            
+            return NULL;
+         }
+
+         syslog(LOG_INFO, "Wrote %zd bytes to file", bytes_written);
+         close(fd);
+
+         
+         fd = open(FILE_PATH, O_RDONLY);
+
+         if (fd < 0)
+         {
+            syslog(LOG_ERR, "Could not open file for reading: %s", strerror(errno));
+            free(packet);
+            pthread_mutex_unlock(&file_mutex);
+            close(conn);
+
+            return NULL;
+         }
+      }
 
       // Send file contents back to client
       char file_buffer[BUFFER_SIZE];
       ssize_t bytes_read;
-      fd = open(FILE_PATH, O_RDONLY);
-
-      if (fd < 0)
-      {
-         syslog(LOG_ERR, "Could not open file for reading: %s", strerror(errno));
-         free(packet);
-         pthread_mutex_unlock(&file_mutex);
-         close(conn);
-
-         return NULL;
-      }
 
       while (!stop_server)
       {
@@ -269,6 +309,8 @@ void *thread_func(void *arg)
             return NULL;
          }
       }
+      
+      
 
       close(fd);
       pthread_mutex_unlock(&file_mutex);
