@@ -202,7 +202,10 @@ void *thread_func(void *arg)
       // Check for AESDCHAR_IOCSEEKTO:X,Y command
       struct aesd_seekto seekto;
 
-      if (sscanf(packet, "AESDCHAR_IOCSEEKTO:%u,%u", &seekto.write_cmd, &seekto.write_cmd_offset) == 2)
+      int matched = sscanf(packet, "AESDCHAR_IOCSEEKTO:%u,%u", &seekto.write_cmd, &seekto.write_cmd_offset);
+      printf("packet='%s' sscanf matched=%d cmd=%u offset=%u", packet, matched, seekto.write_cmd, seekto.write_cmd_offset);
+
+      if (matched == 2)
       {
          //read ioctl
          // Open device, perform ioctl, then read from same fd
