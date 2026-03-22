@@ -203,7 +203,7 @@ void *thread_func(void *arg)
       struct aesd_seekto seekto;
 
       int matched = sscanf(packet, "AESDCHAR_IOCSEEKTO:%u,%u", &seekto.write_cmd, &seekto.write_cmd_offset);
-      printf("packet='%s' sscanf matched=%d cmd=%u offset=%u", packet, matched, seekto.write_cmd, seekto.write_cmd_offset);
+      syslog(LOG_INFO, "packet='%s' sscanf matched=%d cmd=%u offset=%u", packet, matched, seekto.write_cmd, seekto.write_cmd_offset);
 
       if (matched == 2)
       {
