@@ -32,6 +32,8 @@
 #include <linux/cdev.h>
 #include <linux/fs.h> // file_operations
 #include "aesdchar.h"
+#include "aesd_ioctl.h"
+
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
@@ -45,6 +47,8 @@ int aesd_open(struct inode *inode, struct file *filp);
 int aesd_release(struct inode *inode, struct file *filp);
 ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos);
 ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos);
+loff_t aesd_llseek(struct file *filp, loff_t offset, int whence);
+long aesd_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
 int aesd_init_module(void);
 void aesd_cleanup_module(void);
 
@@ -227,12 +231,143 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     return retval;
 }
 
+/**
+ * llseek command
+ * 
+ * @param filp - file pointer
+ * @param offset - specified offset in file
+ * @param whence - 
+ */
+loff_t aesd_llseek(struct file *filp, loff_t offset, int whence)
+{
+    struct aesd_dev* dev = (struct aesd_dev*) filp->private_data;
+    loff_t retval;
+
+    if (mutex_lock_interruptible(&dev->lock))
+    {
+        return -ERESTARTSYS;
+    }
+
+    //get size
+    size_t size = 0;
+    struct aesd_buffer_entry *entry;
+    int idx = 0;
+
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, &dev->circularBuffer, idx)
+    {
+        if(entry->buffptr)
+        {
+            size += entry->size;
+        }
+    }
+
+    mutex_unlock(&dev->lock);
+
+    // https://elixir.bootlin.com/linux/v6.11.8/source/fs/read_write.c#L162
+    retval = fixed_size_llseek(filp, offset, whence, size);
+    
+    //check if valid operation - if not skip update f_pos
+    if (retval < 0 || retval > size) 
+    {
+        return -EINVAL;
+    }
+
+    filp->f_pos = retval;
+
+    return retval;
+}
+
+/**
+ * unlocked ioctl cmd
+ * 
+ * @param filp  file pointer
+ * @param cmd   command
+ * @param arg   type of seek
+ */
+long aesd_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    if (_IOC_TYPE(cmd) != AESD_IOC_MAGIC) return -ENOTTY;
+    if (_IOC_NR(cmd) > AESDCHAR_IOC_MAXNR) return -ENOTTY;
+
+    switch (cmd)
+    {
+        case AESDCHAR_IOCSEEKTO:
+            struct aesd_dev* dev = (struct aesd_dev*) filp->private_data;
+            struct aesd_seekto seekto;
+
+            // copy args
+            if (copy_from_user(&seekto, (const void __user *)arg, sizeof(seekto)))
+                return -EFAULT;
+
+            // verify buffer is big enough
+            if (seekto.write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+                return -EINVAL;
+
+            //lock dev
+            if (mutex_lock_interruptible(&dev->lock))
+            {
+                return -ERESTARTSYS;
+            }
+
+            ssize_t currIdx = dev->circularBuffer.head;
+            ssize_t lastIdx = (dev->circularBuffer.head + seekto.write_cmd) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+            ssize_t endIdx = (lastIdx + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+            loff_t offset = 0;
+
+            while(currIdx != endIdx)
+            {
+                if(currIdx == lastIdx)
+                {
+                    offset += seekto.write_cmd_offset;
+                } 
+                else 
+                {
+                    offset += dev->circularBuffer.entry[currIdx].size;
+                }
+                
+                currIdx = (currIdx + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+            }
+
+            size_t size = 0;
+            struct aesd_buffer_entry *entry;
+            int idx = 0;
+            AESD_CIRCULAR_BUFFER_FOREACH(entry, &dev->circularBuffer, idx)
+            {
+                if(entry->buffptr)
+                {
+                    size += entry->size;
+                }
+            }
+
+            mutex_unlock(&dev->lock);
+
+            // https://elixir.bootlin.com/linux/v6.11.8/source/fs/read_write.c#L162
+            loff_t retval = fixed_size_llseek(filp, offset, SEEK_SET, size);
+            
+            //check if valid operation - if not skip update f_pos
+            if (retval < 0 || retval > size) 
+            {
+                return -EINVAL;
+            }
+
+            filp->f_pos = retval;
+
+            return retval;
+        
+        default:
+            return -ENOTTY;
+    }
+}
+
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
     .write =    aesd_write,
     .open =     aesd_open,
     .release =  aesd_release,
+    .llseek =   aesd_llseek,
+    .unlocked_ioctl = aesd_unlocked_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
